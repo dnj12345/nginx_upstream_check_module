@@ -227,10 +227,10 @@ git clone https://github.com/mofantor/nginx_upstream_check_module.git
 ```
 ### 2. Download and patch Nginx:
 ```bash
-wget http://nginx.org/download/nginx-1.26.3.tar.gz
-tar -xzvf nginx-1.26.3.tar.gz
-cd nginx-1.26.3/
-patch -p1 < ../nginx_upstream_check_module/check_1.26.3+.patch
+wget http://nginx.org/download/nginx-1.30.0.tar.gz
+tar -xzvf nginx-1.30.0.tar.gz
+cd nginx-1.30.0/
+patch -p1 < ../nginx_upstream_check_module/check_1.30.0+.patch
 ```
 
 ### 3. ​Compile and install:
@@ -258,6 +258,7 @@ sudo make install
 | 1.20.1+ | check_1.20.1+.patch |
 | 1.26.3+ | check_1.26.3+.patch |
 | 1.28.1+ | check_1.28.1+.patch |
+| 1.30.0+ | check_1.30.0+.patch |
 
 
 ## Authors
