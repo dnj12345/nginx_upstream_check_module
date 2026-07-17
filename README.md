@@ -152,6 +152,25 @@ check_fastcgi_param "SCRIPT_FILENAME" "index.php";
 + ​Description:
 > Shared memory size for storing health check data.
 
+### check_resolve_max_addrs
++ Syntax:
+> check_resolve_max_addrs number
+
++ Default:
+> 4
+
++ Context:
+> upstream
+
++ Description:
+> Maximum number of concurrently resolved IP addresses that can receive independent health-check slots when using `server <hostname> resolve` inside a `zone`-backed upstream (nginx 1.27.3+, open-source dynamic DNS).
+>
+> When a hostname resolves to more IPs than this value, excess IPs share the health state of the first slot for that hostname (same behaviour as when this directive is absent).
+>
+> Set to `0` to revert to the legacy (V1) shared-slot mode: all IPs resolved from the same hostname share a single health-check slot.  This is equivalent to not having the directive at all in older module versions.
+>
+> The default of `4` covers the vast majority of deployments.  Increase the value only if a single hostname can resolve to more than 4 addresses simultaneously.
+
 ### check_status
 + ​Syntax:
 > check_status [html | csv | json]
@@ -220,17 +239,101 @@ Below it's the sample of json page:
     }
 }
 ```
+
+## Dynamic DNS upstreams (zone + resolve)
+
+Nginx 1.27.3+ (open-source) supports runtime DNS re-resolution when you combine
+`zone` with `server <hostname> resolve` in an upstream block.  Without special
+handling the check module assigns every runtime-resolved IP the same health-check
+slot as the hostname placeholder, so all IPs behind a single hostname appear to
+share one health state — a resolved IP that is actually down can still receive
+traffic if any sibling IP is healthy.
+
+This fork adds **per-IP health checking** for zone+resolve upstreams via a
+pre-allocated slot pool.
+
+### How it works
+
+**Config time** — `ngx_http_upstream_check_add_resolve_peer()` reserves
+`check_resolve_max_addrs` (default: 4) consecutive check slots for each
+`server <hostname> resolve` entry.  Only the first (template) slot is armed
+with a check timer; the rest are marked *available* in shared memory.
+
+**Peer birth** (nginx calls `ngx_http_upstream_zone_copy_peer()` with
+`src=NULL` for each newly resolved IP) — `ngx_http_upstream_check_get_resolve_peer()`
+atomically claims a free slot from the pool, writes the resolved IP into the
+slot's shared-memory probe address, and arms a per-worker check timer for it.
+
+**Peer death** (nginx calls `ngx_http_upstream_zone_remove_peer_locked()`) —
+`ngx_http_upstream_check_put_resolve_peer()` resets the slot's rise/fall
+counters, marks it available again, and cancels its per-worker check timer so
+the slot is immediately reusable for the next resolved address.
+
+### Example config
+
+```nginx
+http {
+    check_shm_size 2M;   # increase if you have many upstreams or large pools
+
+    upstream backend {
+        zone backend 512k;
+
+        server api.example.com resolve;   # DNS re-resolved every TTL seconds
+
+        check interval=3000 rise=2 fall=3 timeout=2000 type=http;
+        check_http_send "HEAD /health HTTP/1.0\r\nHost: api.example.com\r\n\r\n";
+        check_http_expect_alive http_2xx;
+
+        # allow up to 8 concurrently resolved IPs for this hostname
+        check_resolve_max_addrs 8;
+    }
+
+    server {
+        listen 80;
+
+        location / {
+            proxy_pass http://backend;
+        }
+
+        location /upstream_status {
+            check_status json;
+            access_log off;
+        }
+    }
+}
+```
+
+### V1 vs V2 behaviour
+
+| Scenario | Without zone patch (original) | With zone patch, `check_resolve_max_addrs 0` (V1) | With zone patch, `check_resolve_max_addrs N` (V2, default) |
+|---|---|---|---|
+| Static upstreams | Correct per-IP health check | Correct per-IP health check | Correct per-IP health check |
+| `zone` + `resolve`, first resolved IP | Correct | Correct | Correct, own slot |
+| `zone` + `resolve`, additional IPs | All share slot 0 (bug) | All share template slot (V1) | Each gets an independent slot (V2) |
+| DNS flap (IP removed then re-added) | Slot 0 state bleeds across IPs | Template slot state bleeds | Slot reset on peer death; fresh state on peer birth |
+
+**V1 mode** (`check_resolve_max_addrs 0`) eliminates the "shares slot 0" bug
+by propagating the correct template check slot to all runtime peers, but all
+IPs behind a hostname still share one health state.  Choose V1 if you use
+`zone`+`resolve` but every hostname always resolves to exactly one IP.
+
+**V2 mode** (default) gives each resolved IP its own independent health state.
+Use V2 whenever a hostname may resolve to multiple IPs simultaneously.
+
 ## Installation
 ### 1. ​Download the module:
 ```bash
-git clone https://github.com/mofantor/nginx_upstream_check_module.git
+git clone https://github.com/dnj12345/nginx_upstream_check_module.git
 ```
 ### 2. Download and patch Nginx:
 ```bash
 wget http://nginx.org/download/nginx-1.30.0.tar.gz
 tar -xzvf nginx-1.30.0.tar.gz
 cd nginx-1.30.0/
+# Base check-module patch (static upstreams + round-robin integration):
 patch -p1 < ../nginx_upstream_check_module/check_1.30.0+.patch
+# zone+resolve per-IP health check patch (requires zone module):
+patch -p1 < ../nginx_upstream_check_module/check_zone_1.30+.patch
 ```
 
 ### 3. ​Compile and install:
@@ -239,6 +342,10 @@ patch -p1 < ../nginx_upstream_check_module/check_1.30.0+.patch
 make
 sudo make install
 ```
+
+> **Note:** `check_zone_1.30+.patch` is only needed when you use
+> `zone` + `server <hostname> resolve` upstreams.  It is safe to apply even
+> when you do not use dynamic DNS — it adds no overhead for static upstreams.
 
 ## Compatibility Notes
 | Nginx Version | Required Patch |
@@ -258,7 +365,7 @@ sudo make install
 | 1.20.1+ | check_1.20.1+.patch |
 | 1.26.3+ | check_1.26.3+.patch |
 | 1.28.1+ | check_1.28.1+.patch |
-| 1.30.0+ | check_1.30.0+.patch |
+| 1.30.0+ | check_1.30.0+.patch + check_zone_1.30+.patch (zone+resolve only) |
 
 
 ## Authors

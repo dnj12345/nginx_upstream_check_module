@@ -241,11 +241,11 @@
 @@ -196,6 +200,16 @@
                  peer[n].down = server[i].down;
                  peer[n].server = server[i].name;
- 
+
 +#if (NGX_HTTP_UPSTREAM_CHECK)
 +                if (!server[i].down) {
 +                    peer[n].check_index =
-+                        ngx_http_upstream_check_add_peer(cf, us,
++                        ngx_http_upstream_check_add_resolve_peer(cf, us,
 +                                                         &server[i].addrs[0]);
 +                } else {
 +                    peer[n].check_index = (ngx_uint_t) NGX_ERROR;
@@ -275,11 +275,11 @@
 @@ -338,6 +362,16 @@
                  peer[n].down = server[i].down;
                  peer[n].server = server[i].name;
- 
+
 +#if (NGX_HTTP_UPSTREAM_CHECK)
 +                if (!server[i].down) {
 +                    peer[n].check_index =
-+                        ngx_http_upstream_check_add_peer(cf, us,
++                        ngx_http_upstream_check_add_resolve_peer(cf, us,
 +                                                         &server[i].addrs[0]);
 +                } else {
 +                    peer[n].check_index = (ngx_uint_t) NGX_ERROR;
